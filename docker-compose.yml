@@ -1,0 +1,201 @@
+networks:
+  lakehouse_net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  minio_data:
+  unity_catalog_data:
+
+services:
+
+  #################################################
+  # POSTGRES
+  #################################################
+
+  postgres:
+    image: postgres:16
+    container_name: lakehouse_postgres
+
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin
+      POSTGRES_DB: airflow_db
+
+    ports:
+      - "5432:5432"
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+    networks:
+      - lakehouse_net
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  #################################################
+  # MINIO
+  #################################################
+
+  minio:
+    image: minio/minio:latest
+    container_name: lakehouse_minio
+
+    command: server /data --console-address ":9001"
+
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio123
+
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+    volumes:
+      - minio_data:/data
+
+    networks:
+      - lakehouse_net
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  #################################################
+  # MINIO BUCKET INITIALIZATION
+  #################################################
+
+  minio-init:
+    image: minio/mc
+
+    container_name: lakehouse_minio_init
+
+    depends_on:
+      minio:
+        condition: service_healthy
+
+    networks:
+      - lakehouse_net
+
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minio minio123;
+      mc mb local/bronze --ignore-existing;
+      mc mb local/silver --ignore-existing;
+      mc mb local/gold --ignore-existing;
+      mc mb local/checkpoints --ignore-existing;
+      exit 0;
+      "
+
+  #################################################
+  # UNITY CATALOG
+  #################################################
+
+  unity-catalog:
+    image: unitycatalog/unitycatalog:latest
+
+    container_name: lakehouse_unity_catalog
+
+    ports:
+      - "8081:8080"
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    volumes:
+      - unity_catalog_data:/etc/conf
+
+    networks:
+      - lakehouse_net
+
+  #################################################
+  # AIRFLOW
+  #################################################
+
+  airflow:
+    image: apache/airflow:3.0.2
+
+    container_name: lakehouse_airflow
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    ports:
+      - "8080:8080"
+
+    environment:
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://admin:admin@postgres/airflow_db
+
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+
+    command: standalone
+
+    networks:
+      - lakehouse_net
+
+  #################################################
+  # SPARK COMPUTE
+  #################################################
+
+  spark:
+    build:
+      context: .
+      dockerfile: docker/spark/Dockerfile
+
+    container_name: lakehouse_spark
+
+    ports:
+      - "4040:4040"
+
+    environment:
+      AWS_ACCESS_KEY_ID: minio
+      AWS_SECRET_ACCESS_KEY: minio123
+
+    volumes:
+      - ./pipelines:/opt/spark/pipelines
+      - ./notebooks:/opt/spark/notebooks
+      - ./data:/opt/spark/data
+
+    command: >
+      bash -c "
+      echo 'Spark container started';
+      tail -f /dev/null
+      "
+
+    depends_on:
+      minio:
+        condition: service_healthy
+
+    networks:
+      - lakehouse_net
+
+  #################################################
+  # SPARK HISTORY SERVER
+  #################################################
+
+  spark-history:
+    build:
+      context: .
+      dockerfile: docker/spark/Dockerfile
+
+    container_name: lakehouse_spark_history
+
+    ports:
+      - "18080:18080"
+
+    command: >
+      /opt/spark/sbin/start-history-server.sh &&
+      tail -f /dev/null
+
+    networks:
+      - lakehouse_net
