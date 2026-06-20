@@ -180,6 +180,43 @@ services:
       - lakehouse_net
 
   #################################################
+  # PYTHON PROFILE
+  #################################################
+
+  python:
+    build:
+      context: .
+      dockerfile: docker/spark/Dockerfile
+
+    container_name: lakehouse_python
+
+    profiles:
+      - python
+
+    working_dir: /workspace
+
+    environment:
+      AWS_ACCESS_KEY_ID: minio
+      AWS_SECRET_ACCESS_KEY: minio123
+
+    volumes:
+      - ./:/workspace
+      - ./data:/opt/spark/data
+
+    command: >
+      bash -c "
+      echo 'Python profile container started';
+      tail -f /dev/null
+      "
+
+    depends_on:
+      minio:
+        condition: service_healthy
+
+    networks:
+      - lakehouse_net
+
+  #################################################
   # SPARK HISTORY SERVER
   #################################################
 
