@@ -4,7 +4,7 @@ from pyspark.sql import SparkSession
 import os
 
 
-def get_spark(app_name="lakehouse"):
+def get_spark_session(app_name="lakehouse"):
 
     os.environ["SPARK_LOCAL_IP"] = "127.0.0.1"
 
